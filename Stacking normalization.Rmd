@@ -1,0 +1,319 @@
+---
+title: "CAS9 screen Analysis"
+author: "Robert Reid"
+date: "10/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+#library(gridExtra)
+theme_set(theme_bw())
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Screen setup
+
+_cas9-D10A_ cloned into expression plasmids with a scrambled sequence (scr), guide 1 or guide 6 targeted to two different regions of the yeast genome. Empty plasmid pRS415 is used as a control for the screen. The _cas9-D10A_ allele is expressed from --- promoter and the guide RNAs are expressed from ---. _cas9_ expression is induced with beta-estradiol.
+
+Selective ploidy ablation (SPA) is performed as described (Reid _et al_., 2011 10.1101/gr.109033.110) with the following changes. x µM beta-estradiol is spread onto the SC -LEU during the galactose induction step to destabilize the donor chromosomes. x µM beta-estradiol is also included in the 5FOA step during counterselection of donor chromosomes.
+
+The 5FOA plates with beta estradiol were grown for 3 days at 30˚C and images were captured with a flat bed scanner capable of scanning with transmitted light at 300 dpi resolution.
+
+Images were processed and colonies measured using the R screenmill package available on github (https://github.com/robertjdreid/screenmill). All processing code is included in the `process.Rmd` file included in this folder.
+
+#### Queries
+
+- pRS415  : EV
+- g-scr   : CAS9 with scrambled guide RNA
+- g1      : CAS9 with scrambled guide RNA #1
+- g6      : CAS9 with scrambled guide RNA #6
+
+#### Analysis parameters
+
+```{r}
+technical_replicate_sd_cutoff = 0.3  # Maximum allowable SD for technical replicates
+dead_strain_cutoff = 0.1             # Minimum normalized size of control strain
+dead_strain_buffer = 0.0001          # Amount added to avoid infinite fold change 
+slow_growth_cutoff = 0.3
+```
+
+## Global analysis of screen set
+
+#### Load colony size data from plate processing
+
+```{r}
+dir <- "data/images"
+data <- screenmill::read_screenmill(dir)
+```
+
+#### Colony size distribution by query plasmid
+
+Plotting colony size distribution for each query used shows a small global growth effect on all strains
+that received the CAS9 expression plasmids regardless of which guide.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.height=5}
+query_summary <- data %>%
+  group_by(query_name) %>%
+  summarise(
+    mean_growth = mean(size),
+    sd_growth   = sd(size),
+    n_growth    = n(),
+    se_growth   = sd_growth/sqrt(n_growth),
+    ci95        = se_growth * qt(0.975,df=n_growth-1)
+  )
+
+data %>%
+  ggplot(aes(x=size, color=query_name)) +
+  geom_density(size=1.5) +
+  #geom_histogram(bins = 100, fill="white")
+  xlim(c(NA,200)) +
+  ggtitle("Colony size distribution by query plasmid") +
+  xlab("Colony Measurement")
+```
+
+#### Population means are affected by cas9-D10A queries
+
+Based on confidence intervals, cas9-D10A expression broadly affected all strains in the library compared to the empty vector control. There even seems to be a small but significant difference between expression of guides 1 and 6 compared to the scrambled guide.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE}
+knitr::kable(query_summary[,c(1,2,3,6)])
+```
+
+#### Raw measurement data
+
+Matrix plots are presented for each library plate by query combination.
+Color scale indicates colony size.
+Growth is overall fairly uniform - which is what we want to see.
+
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+data %>%
+  ggplot(aes(x=colony_col,y=colony_row, fill=size)) +
+  geom_raster() +
+  facet_grid(query_name ~ plate) +
+  scale_fill_viridis_c() +
+  scale_y_reverse()
+
+```
+
+#### Plate normalization
+
+Global differences in colony growth due to the queries is factored out by plate normalization.
+Normalization also takes care of any plate by plate differences that might globally affect growth.
+Normalization is accomplished by dividing each value by a trimmed mean for that plate.
+The following figure shows normalized colony values by plate and query.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE}
+plate_normalized <-
+  data %>%
+  group_by(plate_id) %>%
+  mutate(
+    size_plate_norm = size / mean(size[plate_control], trim = 0.2)
+  ) %>%
+  ungroup()
+```
+
+Replotting the size distribution after normalization
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.height=5}
+plate_normalized %>%
+  ggplot(aes(x=size_plate_norm, color=query_id)) +
+  geom_density(size=1.5) +
+  xlim(c(NA,2.5))
+```
+
+```{r echo=FALSE,eval=FALSE}
+plate_normalized %>%
+  ggplot(aes(x=colony_col,y=colony_row, fill=size_plate_norm)) +
+  geom_raster() +
+  facet_grid(query_name ~ plate) +
+  scale_fill_viridis_c() +
+  scale_y_reverse()
+```
+
+#### Position normalization
+
+Zooming in on normalized data for a single control plate shows growth variation that is position dependent.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+plate_normalized %>%
+  filter(plate == 1) %>%
+  filter(query_id == "pRS415") %>%
+  ggplot(aes(x=colony_col,y=colony_row, fill=size_plate_norm)) +
+  geom_raster() +
+  #facet_grid(query_name ~ plate) +
+  scale_fill_viridis_c() +
+  scale_y_reverse()
+```
+
+Most of this growth variation has to do with colonies positioned near the edge of the grid have access to
+more nutrients from the border of each plate.
+Getting the median value for all plate positions shows this very clearly.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+plate_stack <- 
+  plate_normalized %>%
+  group_by(colony_row,colony_col) %>%
+  summarise(
+    stack_size = median(size_plate_norm)
+  ) %>%
+  ungroup()
+
+plate_stack %>%
+  ggplot(aes(x=colony_col,y=colony_row,fill=stack_size)) +
+  geom_raster() +
+  scale_y_reverse() +
+  scale_fill_viridis_c()
+```
+
+A smoothed loess model of position-dependent growth differences is used for position normalization.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+stack_model <-
+  plate_stack %>%
+  filter(stack_size > 0.25) %>% # leaving blanks may work better
+  loess(stack_size ~ colony_col + colony_row, data = .,
+        degree = 2,normalize = F,span=0.15) # span is the window of data considered 
+#                                               for each segment of smoothing
+
+stack_predict <- predict(stack_model,plate_stack)
+
+plate_predict <- cbind(plate_stack,predict = stack_predict)
+
+plate_predict %>%
+  ggplot(aes(x=colony_col,y=colony_row,fill=predict)) +
+  geom_raster() +
+  scale_y_reverse() +
+  scale_fill_viridis_c()
+```
+
+Data after plate and position normalizations by plate and query
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+position_normal <- plate_normalized %>%
+  left_join(plate_predict) %>%
+  mutate(
+    size_pos_norm = size_plate_norm/predict
+  )
+
+position_normal %>%
+  ggplot(aes(x=colony_col,y=colony_row,fill=size_pos_norm)) +
+  geom_raster() +
+  facet_grid(query_name ~ plate) +
+  scale_y_reverse() +
+  scale_fill_viridis_c()
+
+```
+
+Next the technical replicates are averaged and filters are applied to remove dead strains from the
+control query and also to remove highly variable results.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+aggregated_technical_replicates <- 
+  position_normal %>%
+  group_by(
+    date, strain_collection_id, strain_name, strain_id, query_name, query_id, 
+    control_query_id, plate, row, column
+  ) %>%
+  summarise(
+    n    = n(),
+    sd   = sd(size_pos_norm),
+    mean = mean(size_pos_norm)
+  ) %>%
+  ungroup() %>%
+  filter(
+    sd < technical_replicate_sd_cutoff,
+    !(query_id == control_query_id & mean < dead_strain_cutoff)
+  )
+```
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+aggregated_technical_replicates %>%
+  ggplot(aes(x=column,y=row,fill=mean)) +
+  geom_raster() +
+  facet_grid(query_name ~ plate) +
+  scale_y_reverse() +
+  scale_fill_viridis_c()
+```
+
+Next calculate log growth ratios compared to controls and write to file.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+controls <- filter(aggregated_technical_replicates, query_id == control_query_id)
+queries  <- filter(aggregated_technical_replicates, query_id != control_query_id)
+
+compared_to_controls <-
+  inner_join(
+    queries,
+    controls %>% 
+      select(
+        date,strain_collection_id, strain_name, strain_id, plate, row, column, 
+        n_ctrl = n, sd_ctrl = sd, mean_ctrl = mean
+      ),
+    by = c(
+      "date","strain_collection_id", "strain_name", "strain_id", "plate", "row", "column"
+    )
+  ) %>%
+  group_by(date, query_id) %>%
+  mutate(
+    growth_ratio = (mean + dead_strain_buffer)/(mean_ctrl + dead_strain_buffer),
+    log2_fold_change = log2(growth_ratio),
+    sd_log2_fold_change = sd(log2_fold_change),
+    z_score = (log2_fold_change - mean(log2_fold_change)) / sd_log2_fold_change,
+    p_value = 2 * pnorm(-abs(z_score))
+  ) %>%
+  write_csv('data/screenmill-interaction-scores.csv')
+
+# write file without plate controls
+
+compared_to_controls %>%
+  filter(strain_name != "his3") %>%
+  filter(mean_ctrl >= slow_growth_cutoff) -> new_output
+
+write_csv(new_output,'data/screenmill-interaction-scores-noHIS.csv')
+```
+
+#### Distribution by z score
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+new_output %>%
+  ggplot(aes(x=reorder(strain_name,z_score),y=z_score,color = plate > 11)) +
+  geom_point(size=1,alpha=0.1) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size=20)) +
+  facet_grid(query_id ~ .) +
+  xlab("strains") #+
+  #ylim(-15,NA)
+```
+
+#### Is there a position effect of where the "hits" are?
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+library(scico)
+limit <- max(abs(new_output$z_score)) * c(-0.7, 0.7)
+new_output %>%
+  ggplot(aes(x=column,y=row,fill=z_score)) +
+  geom_raster() +
+  scale_y_reverse() +
+  facet_grid(query_id ~ plate) +
+  scale_fill_distiller(type = "div", limit = limit, palette = "PiYG") +
+  #scale_fill_scico(palette = "berlin",begin = limit[1],end = limit[2]) 
+  #xlim(c(1,24)) +
+  theme(panel.grid = element_blank(),
+        panel.background = element_rect(fill = "grey90"))
+```
+
+Group strains to look at variance
+
+```{r}
+by_strain <- new_output %>%
+  group_by(strain_name,strain_id,query_name,query_id) %>%
+  summarise(
+    mean_z = mean(z_score),
+    sd_z   = sd(z_score),
+    n_z    = n()
+  )
+
+```

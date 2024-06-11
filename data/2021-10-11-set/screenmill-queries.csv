@@ -1,0 +1,5 @@
+query_id,query_name,query_annotation,control_query_id
+g-scr,scrambled control,plasmids,pRS415
+g1,guide 1,plasmids,pRS415
+g6,guide 6,plasmids,pRS415
+pRS415,EV control,plasmids,pRS415

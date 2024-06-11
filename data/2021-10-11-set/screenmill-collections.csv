@@ -1,0 +1,2 @@
+strain_collection_id,description
+MATa-2021ver-384,"The 2021 (YSC1053) MATa KanMX deletion collection in 384 density format plus the four plates from cisPT-V2 library. Plates 51 and 71 combined to make plate76. 16 plates in 384 collection in the following groups 1=[1,2,3,4] 2=[5,6,7,8] 3=[9,10,11,12] 4=[13,14,15,16] 5=[17,18,19,20] 6=[21,22,23,24] 7=[25,26,27,28] 8=[29,30,31,32] 9=[33,34,35,70] 10=[36,37,38,72] 11=[39,40,41,73] 12=[42,cis3,43,74] 13=[44,cis4,45,75] 14=[46,47,48,76] 15=[49,50,12,cis3] 16=[50,30,6,cis2]"

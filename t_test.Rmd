@@ -1,0 +1,230 @@
+---
+title: "Volcano"
+author: "Robert J.D. Reid, Ph.D."
+date: "2023-04-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+#library(gridExtra)
+theme_set(theme_bw())
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Screen setup
+
+_cas9-D10A_ cloned into expression plasmids with a scrambled sequence (scr), guide 1 or guide 6 targeted to two different regions of the yeast genome. Empty plasmid pRS415 is used as a control for the screen. The _cas9-D10A_ allele is expressed from --- promoter and the guide RNAs are expressed from ---. _cas9_ expression is induced with beta-estradiol.
+
+Selective ploidy ablation (SPA) is performed as described (Reid _et al_., 2011 10.1101/gr.109033.110) with the following changes. x µM beta-estradiol is spread onto the SC -LEU during the galactose induction step to destabilize the donor chromosomes. x µM beta-estradiol is also included in the 5FOA step during counterselection of donor chromosomes.
+
+The 5FOA plates with beta estradiol were grown for 3 days at 30˚C and images were captured with a flat bed scanner capable of scanning with transmitted light at 300 dpi resolution.
+
+Images were processed and colonies measured using the R screenmill package available on github (https://github.com/robertjdreid/screenmill). All processing code is included in the `process.Rmd` file included in this folder.
+
+#### Queries
+
+- pRS415  : EV
+- g-scr   : CAS9 with scrambled guide RNA
+- g1      : CAS9 with scrambled guide RNA #1
+- g6      : CAS9 with scrambled guide RNA #6
+
+#### Analysis parameters
+
+```{r}
+technical_replicate_sd_cutoff = 0.3      # Maximum allowable SD for technical replicates
+dead_strain_cutoff            = 0.1      # Minimum normalized size of control strain
+dead_strain_buffer            = 0.0001   # Amount added to avoid infinite fold change 
+slow_growth_cutoff            = 0.3
+scale_floor                   = 20
+control_query_id              = "pRS415"
+```
+
+#### Analysis motivation
+
+Previous analyses calculated the ratios between experimental
+and control conditions, log-adjusted them to a 'normal'
+distribution, and identified affected strains - or "hits" -
+by the strains at the tails of the distribution.
+This is not an unreasonable approach, but it does not take
+into account overall effect size without some kludge code.
+We typically put a lower limit on the total growth to avoid
+tiny colonies becoming tinier ang giving an outsized ratio
+effect.
+A volcano plot plots effect size on the x axis compared to 
+p value.
+This can be done with growth ratios or differential effect sizes.
+In order to get a p value, we will calculate t statistics.
+
+#### Analysis overview
+
+1. plate normalize by median plate size value
+2. preform "stacking" position normalization in which a median growth value for every position is
+ defined by collapsing all data into one virtual plate and making smooth surface by the median of
+ each position.
+3. separate experimentals and controls to summarise by ratio, difference and t.test
+4. generate volcano plots
+
+#### Load colony size data from plate processing
+
+```{r}
+dir <- "data/images"
+data <- screenmill::read_screenmill(dir)
+```
+
+## 1. plate normalize
+
+```{r echo=FALSE, message=FALSE,warning=FALSE}
+plate_normalized <-
+  data %>%
+  group_by(plate_id) %>%
+  mutate(
+    size_plate_norm = size / mean(size[plate_control], trim = 0.2)
+  ) %>%
+  ungroup()
+```
+
+## 2. stack normalize
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+plate_stack <- 
+  plate_normalized %>%
+  group_by(colony_row,colony_col) %>%
+  summarise(
+    stack_size = median(size_plate_norm)
+  ) %>%
+  ungroup()
+
+stack_model <-
+  plate_stack %>%
+  filter(stack_size > 0.25) %>% # leaving blanks may work better
+  loess(stack_size ~ colony_col + colony_row, data = .,
+        degree = 2,normalize = F,span=0.15) # span is the window of data considered 
+#                                               for each segment of smoothing
+
+stack_predict <- predict(stack_model,plate_stack)
+
+plate_predict <- cbind(plate_stack,predict = stack_predict)
+
+position_normal <- plate_normalized %>%
+  left_join(plate_predict) %>%
+  mutate(
+    size_pos_norm = size_plate_norm/predict
+  )
+
+write_csv(position_normal, "data/normalized.csv")
+```
+
+
+There are positions with missing data.
+
+some with too few ( < 2) for a t test
+
+right now I am saving out the normalized data into a csv, deleting the positions that can't be 
+tested, and reloading from disk afterwards.
+
+__not sustainable__
+
+List of lines removed
+tpi1 at 35620 - only 1 control value
+
+Need to count frequencies and remove programatically
+
+Count occurences
+
+```{r}
+o_count = position_normal %>%
+  group_by(query_id,strain_id) %>%
+  count() %>%
+  filter(n < 2)
+
+q_count = o_count %>%
+  filter(query_id != control_query_id)
+
+c_count = o_count %>%
+  filter(query_id == control_query_id)
+
+clean_normal = position_normal
+
+if (length(q_count[[1]]) > 0) clean_normal = filter(clean_normal,
+                                                    !query_id == q_count$query_id |
+                                                    !strain_id == q_count$strain_id)
+
+if (length(c_count[[1]]) > 0) clean_normal = filter(clean_normal,
+                                                    strain_id != c_count$strain_id)
+
+#write_csv(clean_for_t, "data/clean-normalized.csv")
+```
+
+
+
+```{r}
+#clean_normal = read_csv("data/normalized.csv")
+
+controls <- filter(clean_normal, query_id == control_query_id)
+queries  <- filter(clean_normal, query_id %in% c("g1","g6"))
+compared_to_controls <-
+  inner_join(
+    queries %>%
+      select(
+        temperature,strain_collection_id, strain_name, strain_id, plate, row, column,colony_row,colony_col,
+        query_id, query_name,size_pos_norm
+      ),
+    controls %>% 
+      select(
+        temperature,strain_collection_id, strain_name, strain_id, plate, row, column,colony_row,colony_col,
+        size_pos_norm
+      ),
+    by = c(
+      "temperature","strain_collection_id", "strain_name", "strain_id", "plate", "row", "column","colony_row","colony_col"
+    )
+  ) %>%
+  mutate(
+    growth_dif = size_pos_norm.x - size_pos_norm.y,
+    growth_ratio = (size_pos_norm.x + dead_strain_buffer)/(size_pos_norm.y + dead_strain_buffer),
+    lgr = log2(growth_ratio)
+  )
+
+```
+
+
+
+```{r}
+t_stat <- compared_to_controls %>%
+  group_by(temperature, strain_name, strain_id, plate, row, column, query_id) %>%
+  summarise(
+    t        = t.test(size_pos_norm.x,size_pos_norm.y)$statistic,
+    p        = t.test(size_pos_norm.x,size_pos_norm.y)$p.value,
+    mean_dif = mean(growth_dif,na.rm=T),
+    sd_dif   = sd(growth_dif,na.rm=T),
+    mean_lgr = mean(lgr,na.rm=T),
+    sd_lgr   = sd(lgr,na.rm=T)
+  ) %>%
+  filter(!strain_name %in% c("blank","his3"))
+```
+
+
+plot differences
+
+```{r}
+t_stat %>%
+  ggplot(aes(x=mean_dif,y=-log10(p),label=strain_name,color=query_id)) +
+  geom_point() +
+  geom_text(data=subset(t_stat, abs(mean_dif) > 0.5 & -log10(p) > 3),vjust = 1,color="black") +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_grid(. ~ query_id)
+
+```
+
+
+plot ratios
+
+```{r}
+t_stat %>%
+  ggplot(aes(x=mean_lgr,y=-log10(p),label=strain_name,color=query_id)) +
+  geom_point() +
+  geom_text(data=subset(t_stat, abs(mean_lgr) > 1 & -log10(p) > 3),vjust = 1,color="black") +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_grid(. ~ query_id) +
+  xlim(c(-3,3))
+```

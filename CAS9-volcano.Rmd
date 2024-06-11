@@ -1,0 +1,260 @@
+---
+title: "CAS9 volcano plot"
+author: "Robert Reid"
+date: "2023-04-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggrepel)
+knitr::opts_chunk$set(echo = TRUE)
+theme_set(theme_bw())
+```
+
+_Note: due to a bug in the EZDB R package, screenmill needs to be run in an R version less than R4.2 (e.g. 4.1.x)_
+
+## Make a volcano plot using 2 runs of screen data on MATa library with CAS9 nickase
+
+Load data from October 2021 and November 2021 runs of a screen of the CAS9 nickase with 2 genome-specific guides and a scrambled control. After normalization, growth differences and growth ratios between control and specific guides are calculated t test statistics for every result is calculated. Then make volcano plots for effect size vs p value.
+
+### Steps
+
+
+#### 1. Read data
+
+__The data locations__
+
+```{r}
+data_loc_list = c(
+  "data/2021-10-11-set",
+  "data/2021-11-08-set"
+)
+
+
+data = map_dfr(data_loc_list,screenmill::read_screenmill)
+```
+
+#### 2. Set analysis parameters
+
+```{r}
+technical_replicate_sd_cutoff = 0.3      # Maximum allowable SD for technical replicates
+dead_strain_cutoff            = 0.1      # Minimum normalized size of control strain
+dead_strain_buffer            = 0.0001   # Amount added to avoid infinite fold change 
+slow_growth_cutoff            = 0.3
+scale_floor                   = 20
+#control                       = "pRS415"
+control                       = "g-scr"
+```
+
+#### 3. plate normalize
+
+This normalizes each plate to its trimmed mean.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE}
+plate_normalized <-
+  data %>%
+  group_by(plate_id) %>%
+  mutate(
+    size_plate_norm = size / mean(size[plate_control], trim = 0.2)
+  ) %>%
+  ungroup() %>%
+  select (-control_query_id) %>%
+  mutate(control_query_id = control)
+```
+
+#### 4. stack normalize
+
+This runs a spatial normalization to make up for growth anomalies along
+the edge of the plates
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+plate_stack <- 
+  plate_normalized %>%
+  group_by(colony_row,colony_col) %>%
+  summarise(
+    stack_size = median(size_plate_norm)
+  ) %>%
+  ungroup()
+
+stack_model <-
+  plate_stack %>%
+  filter(stack_size > 0.25) %>% # leaving blanks may work better
+  loess(stack_size ~ colony_col + colony_row, data = .,
+        degree = 2,normalize = F,span=0.15) # span is the window of data considered 
+#                                               for each segment of smoothing
+
+stack_predict <- predict(stack_model,plate_stack)
+
+plate_predict <- cbind(plate_stack,predict = stack_predict)
+
+position_normal <- plate_normalized %>%
+  left_join(plate_predict) %>%
+  mutate(
+    size_pos_norm = size_plate_norm/predict
+  )
+
+#write_csv(position_normal, "data/normalized.csv")
+```
+
+#### 5. remove locations with missing data
+
+Some strain/query combinations with too few ( < 2) for a t test need to 
+be removed or it breaks the calculations for the whole set.
+
+```{r}
+o_count = position_normal %>%
+  group_by(query_id,strain_id) %>%
+  count() %>%
+  filter(n < 2)
+
+q_count = o_count %>%
+  filter(query_id != control)
+
+c_count = o_count %>%
+  filter(query_id == control)
+
+clean_normal = position_normal
+
+if (length(q_count[[1]]) > 0) clean_normal = filter(clean_normal,
+                                                    !query_id == q_count$query_id |
+                                                    !strain_id == q_count$strain_id)
+
+if (length(c_count[[1]]) > 0) clean_normal = filter(clean_normal,
+                                                    strain_id != c_count$strain_id)
+
+#write_csv(clean_for_t, "data/clean-normalized.csv")
+```
+
+#### 6. Make comparisons
+
+Calculate growth differences and growth ratios for evaluation.
+
+```{r}
+#clean_normal = read_csv("data/normalized.csv")
+
+controls <- filter(clean_normal, query_id == control_query_id)
+queries  <- filter(clean_normal, query_id %in% c("g1","g6"))
+compared_to_controls <-
+  inner_join(
+    queries %>%
+      select(
+        date,temperature,strain_collection_id, strain_name, strain_id, plate, row, column,colony_row,colony_col,
+        query_id, query_name,size_pos_norm
+      ),
+    controls %>% 
+      select(
+        date,temperature,strain_collection_id, strain_name, strain_id, plate, row, column,colony_row,colony_col,
+        size_pos_norm
+      ),
+    by = c("date",
+      "temperature","strain_collection_id", "strain_name", "strain_id", "plate", "row", "column","colony_row","colony_col"
+    )
+  ) %>%
+  mutate(
+    growth_dif = size_pos_norm.x - size_pos_norm.y,
+    growth_ratio = (size_pos_norm.x + dead_strain_buffer)/(size_pos_norm.y + dead_strain_buffer),
+    lgr = log2(growth_ratio)
+  )
+
+```
+
+#### 7. Generate stats
+
+t statistics for difference and ratios.
+
+```{r}
+t_stat <- compared_to_controls %>%
+  group_by(temperature, strain_name, strain_id, plate, row, column, query_id) %>%
+  summarise(
+    t        = t.test(size_pos_norm.x,size_pos_norm.y)$statistic,
+    p        = t.test(size_pos_norm.x,size_pos_norm.y)$p.value,
+    mean_dif = mean(growth_dif,na.rm=T),
+    sd_dif   = sd(growth_dif,na.rm=T),
+    mean_lgr = mean(lgr,na.rm=T),
+    sd_lgr   = sd(lgr,na.rm=T)
+  ) %>%
+  filter(!strain_name %in% c("blank","his3"))
+```
+
+#### 8. Set plot cutoffs
+
+```{r}
+diff   = 0.5
+p_diff = 5
+rat    = 0.8
+p_rat  = 5
+```
+
+
+plot differences
+
+```{r}
+t_stat %>%
+  ggplot(aes(x=mean_dif,y=-log10(p),label=strain_name,color=query_id)) +
+  geom_point() +
+  geom_text_repel(data=subset(t_stat, abs(mean_dif) > diff & -log10(p) > p_diff),
+                  vjust = 1,color="black") +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_grid(. ~ query_id)
+
+```
+
+
+plot ratios
+
+```{r}
+t_stat %>%
+  ggplot(aes(x=mean_lgr,y=-log10(p),label=strain_name,color=query_id)) +
+  geom_point() +
+  geom_text_repel(data=subset(t_stat, abs(mean_lgr) > rat & -log10(p) > p_rat),vjust = 1,color="black") +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_grid(. ~ query_id) +
+  xlim(c(-3,3))
+```
+
+
+#### Export lists
+
+```{r}
+t_stat %>%
+  filter(abs(mean_dif) >diff) %>%
+  filter(-log10(p) > p_diff) %>%
+  write_csv(paste0("control_",control,"_dif_",diff,"_p_",p_diff,".csv"))
+
+t_stat %>%
+  filter(abs(mean_lgr) > rat) %>%
+  filter(-log10(p) > p_rat) %>%
+  write_csv(paste0("control_",control,"_rat_",rat,"_p_",p_rat,".csv"))
+
+write_csv(t_stat,paste0("control_",control,"full_result.csv"))
+```
+
+
+#### Compare results from two screens
+
+```{r}
+screen_compare <- compared_to_controls %>%
+  select(
+    date,strain_name,strain_id,plate,row,column,
+    colony_row,colony_col,query_name,query_id,
+    growth_dif,lgr
+  ) %>%
+  pivot_wider(names_from = date,values_from = c(growth_dif,lgr))
+
+```
+
+Plot
+
+```{r}
+screen_compare %>%
+  #filter(plate == 10) %>%
+  ggplot(aes(x=`growth_dif_2021-10-11`,
+             y=`growth_dif_2021-11-08`)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap( ~ query_id) +
+  lims(x=c(-2,2),y=c(-2,2)) +
+  scale_color_viridis_d(option = "turbo")
+```
+

@@ -1,0 +1,176 @@
+---
+title: "correlation"
+author: "Robert J.D. Reid, Ph.D."
+date: "2023-05-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggrepel)
+knitr::opts_chunk$set(echo = TRUE)
+theme_set(theme_bw())
+```
+
+
+#### 1. Read data
+
+__The data locations__
+
+```{r}
+data_loc_list = c(
+  "data/2021-10-11-set",
+  "data/2021-11-08-set"
+)
+
+
+data = map_dfr(data_loc_list,screenmill::read_screenmill)
+```
+
+#### 2. Set analysis parameters
+
+```{r}
+technical_replicate_sd_cutoff = 0.3      # Maximum allowable SD for technical replicates
+dead_strain_cutoff            = 0.1      # Minimum normalized size of control strain
+dead_strain_buffer            = 0.0001   # Amount added to avoid infinite fold change 
+slow_growth_cutoff            = 0.3
+scale_floor                   = 20
+#control                       = "pRS415"
+control                       = "g-scr"
+```
+
+#### 3. plate normalize
+
+This normalizes each plate to its trimmed mean.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE}
+plate_normalized <-
+  data %>%
+  group_by(plate_id) %>%
+  mutate(
+    size_plate_norm = size / mean(size[plate_control], trim = 0.2)
+  ) %>%
+  ungroup() %>%
+  select (-control_query_id) %>%
+  mutate(control_query_id = control)
+```
+
+#### 4. stack normalize
+
+This runs a spatial normalization to make up for growth anomalies along
+the edge of the plates
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+plate_stack <- 
+  plate_normalized %>%
+  group_by(colony_row,colony_col) %>%
+  summarise(
+    stack_size = median(size_plate_norm)
+  ) %>%
+  ungroup()
+
+stack_model <-
+  plate_stack %>%
+  filter(stack_size > 0.25) %>% # leaving blanks may work better
+  loess(stack_size ~ colony_col + colony_row, data = .,
+        degree = 2,normalize = F,span=0.15) # span is the window of data considered 
+#                                               for each segment of smoothing
+
+stack_predict <- predict(stack_model,plate_stack)
+
+plate_predict <- cbind(plate_stack,predict = stack_predict)
+
+position_normal <- plate_normalized %>%
+  left_join(plate_predict) %>%
+  mutate(
+    size_pos_norm = size_plate_norm/predict
+  )
+
+#write_csv(position_normal, "data/normalized.csv")
+```
+
+Next the technical replicates are averaged and filters are applied to remove dead strains from the
+control query and also to remove highly variable results.
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=12,fig.height=4}
+aggregated_technical_replicates <- 
+  position_normal %>%
+  group_by(
+    date, strain_collection_id, strain_name, strain_id, query_name, query_id, 
+    control_query_id, plate, row, column
+  ) %>%
+  summarise(
+    n    = n(),
+    ag.sd   = sd(size_pos_norm),
+    ag.mean = mean(size_pos_norm)
+  ) %>%
+  ungroup() %>%
+  filter(
+    ag.sd < technical_replicate_sd_cutoff,
+    !(query_id == control_query_id & ag.mean < dead_strain_cutoff)
+  )
+```
+
+
+#### 6. Make comparisons
+
+Calculate growth differences and growth ratios for evaluation.
+
+```{r}
+#aggregated_technical_replicates = read_csv("data/normalized.csv")
+
+controls <- filter(aggregated_technical_replicates, query_id == control_query_id)
+queries  <- filter(aggregated_technical_replicates, query_id %in% c("g1","g6"))
+compared_to_controls <-
+  inner_join(
+    queries %>%
+      select(
+        date,strain_collection_id, strain_name, strain_id, plate, row, column,
+        query_id, query_name,ag.mean
+      ),
+    controls %>% 
+      select(
+        date,strain_collection_id, strain_name, strain_id, plate, row, column,
+        ag.mean
+      ),
+    by = c("date",
+      "strain_collection_id", "strain_name", "strain_id", "plate", "row", "column"
+    )
+  ) %>%
+  mutate(
+    growth_dif = ag.mean.x - ag.mean.y,
+    growth_ratio = (ag.mean.x + dead_strain_buffer)/(ag.mean.y + dead_strain_buffer),
+    lgr = log2(growth_ratio)
+  )
+
+```
+
+
+
+#### Compare results from two screens
+
+```{r}
+screen_compare <- compared_to_controls %>%
+  select(
+    date,strain_name,strain_id,plate,row,column,
+    query_name,query_id,
+    growth_dif,lgr
+  ) %>%
+  pivot_wider(names_from = date,values_from = c(growth_dif,lgr))
+
+```
+
+Plot
+
+```{r}
+screen_compare %>%
+  #filter(plate == 10) %>%
+  ggplot(aes(x=`lgr_2021-10-11`,
+             y=`lgr_2021-11-08`,
+             color = query_name)) +
+  geom_point() +
+  #geom_smooth(method = "lm") +
+  #facet_grid(query_id ~ .) +
+  #lims(x=c(-2,2),y=c(-2,2)) +
+  scale_color_viridis_d(option = "turbo",begin = 0.2,end = 0.8)
+```
