@@ -2,7 +2,7 @@
 title: "README"
 author: "Robert Reid"
 date: "`r Sys.Date()`"
-output: html_document
+output: {md_document: {variant: 'markdown_github'}}
 bibliography: references/ref.bib
 ---
 
