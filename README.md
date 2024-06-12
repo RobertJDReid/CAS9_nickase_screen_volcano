@@ -18,13 +18,11 @@ and Bryant 2024) and growth of each strain was compared to a scrambled
 guide control or an empty vector control.
 
 This project imports processed data from *screenmill* output, combines
-data from two runs of the SPA screen, and calculates a *t* statistic and
-*p* value for the growth comparison. These are plotted in a “volcano”
+data from two runs of the SPA screen, and calculates a *t*-statistic and
+*p*-value for the growth comparison. These are plotted in a “volcano”
 plot which is normalized growth difference by p value shown below. Note
 that screenmill requires a version less than 4.2 due to a breaking
 change in one of the packages it relies on.
-
-{p}
 
 <img src="figures/dif_scr.png" width="50%" style="display: block; margin: auto;" />
 
