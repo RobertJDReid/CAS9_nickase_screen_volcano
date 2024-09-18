@@ -1,16 +1,17 @@
 ## CAS9 Volcano plot
 
-This R project file contains code and data used to produce figures 4A
-and S4C in the manuscript *Leading and lagging strand fork collapses
+This R project file contains code and data used to produce figures 5A
+and S5C in the manuscript *Leading and lagging strand fork collapses
 differ in structure and requirements for repair* by Michael T Kimble,
 Aakanksha Sane, Robert JD Reid, Meret Arter, Matthew J Johnson, Rodney
 Rothstein, Scott Keeney and Lorraine S Symington. In revision for
 *Molecular Cell*.
 
-A mutant version of *CAS9* was used to make single strand breaks in
-genomic DNA using RNA guides targeting sites on yeast chromosome VI. A
-CAS9 and guide RNA expression plasmid was transferred into the
-approximately 4800 strains of a yeast gene disruption library using the
+A mutant version of *CAS9* , CAS9-D10A, was used to make single strand
+breaks in genomic DNA in combination with RNA guides targeting sites on
+yeast chromosome VI. A CAS9 and guide RNA expression plasmid was
+transferred into the approximately 4800 strains of a yeast gene
+disruption library (Horizon Discovery, cat Cat# YSC1053, using the
 selective ploidy ablation (SPA) protocol (R. J. D. Reid et al. 2011).
 CAS9 expression was induced in these mutant strains, growth was
 determined by colony size using the *screenmill* R package (R. J. Reid
@@ -18,11 +19,11 @@ and Bryant 2024) and growth of each strain was compared to a scrambled
 guide control or an empty vector control.
 
 This project imports processed data from *screenmill* output, combines
-data from two runs of the SPA screen, and calculates a *t*-statistic and
-*p*-value for the growth comparison. These are plotted in a “volcano”
-plot which is normalized growth difference by *p*-value shown below.
-Note that *screenmill* requires a version less than 4.2 due to a
-breaking change in one of the packages it relies on.
+and normalizes data from two runs of the SPA screen, and calculates a
+*t*-statistic and *p*-value for the growth comparison. These are plotted
+in a “volcano” plot which is normalized growth difference by *p*-value
+shown below. Note that *screenmill* currently requires an R version less
+than 4.2.
 
 <img src="figures/dif_scr.png" width="50%" style="display: block; margin: auto;" />
 
