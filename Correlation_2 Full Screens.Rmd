@@ -1,0 +1,298 @@
+---
+title: "Correlation_2 Full Screens"
+author: "Robert Reid, modified by Michael Kimble"
+date: "4/28/2023"
+output: html_document
+---
+
+###This code is adapted from Robert Reid "CAS9-volcano.Rmd"; Code is the same until generating 'compared_to_controls'
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggrepel)
+knitr::opts_chunk$set(echo = TRUE)
+theme_set(theme_bw())
+```
+
+#### 1. Read data
+
+__The data locations__
+
+```{r}
+data_loc_list = c(
+  "data/2021-10-11-set",
+  "data/2021-11-08-set"
+)
+
+
+data = map_dfr(data_loc_list,screenmill::read_screenmill)
+```
+
+#### 2. Set analysis parameters
+
+```{r}
+technical_replicate_sd_cutoff = 0.3      # Maximum allowable SD for technical replicates
+dead_strain_cutoff            = 0.1      # Minimum normalized size of control strain
+dead_strain_buffer            = 0.0001   # Amount added to avoid infinite fold change 
+slow_growth_cutoff            = 0.3
+scale_floor                   = 20
+#control                       = "pRS415"
+control                       = "g-scr"   #Scrambled gRNA used as control
+```
+
+#### 3. plate normalize
+
+```{r echo=FALSE, message=FALSE,warning=FALSE}
+plate_normalized <-
+  data %>%
+  group_by(plate_id) %>%
+  mutate(
+    size_plate_norm = size / mean(size[plate_control], trim = 0.2)
+  ) %>%
+  ungroup() %>%
+  select (-control_query_id) %>%
+  mutate(control_query_id = control)
+```
+
+#### 4. stack normalize
+
+```{r echo=FALSE, message=FALSE,warning=FALSE,fig.width=6,fig.height=4}
+plate_stack <- 
+  plate_normalized %>%
+  group_by(colony_row,colony_col) %>%
+  summarise(
+    stack_size = median(size_plate_norm)
+  ) %>%
+  ungroup()
+
+stack_model <-
+  plate_stack %>%
+  filter(stack_size > 0.25) %>% # leaving blanks may work better
+  loess(stack_size ~ colony_col + colony_row, data = .,
+        degree = 2,normalize = F,span=0.15) # span is the window of data considered 
+#                                               for each segment of smoothing
+
+stack_predict <- predict(stack_model,plate_stack)
+
+plate_predict <- cbind(plate_stack,predict = stack_predict)
+
+position_normal <- plate_normalized %>%
+  left_join(plate_predict) %>%
+  mutate(
+    size_pos_norm = size_plate_norm/predict
+  )
+
+#write_csv(position_normal, "data/normalized.csv")
+```
+
+#### 5. remove locations with missing data
+
+some strain/query combinations with too few ( < 2) for a t test
+
+Count occurrences
+
+```{r}
+o_count = position_normal %>%
+  group_by(query_id,strain_id) %>%
+  count() %>%
+  filter(n < 2)
+
+q_count = o_count %>%
+  filter(query_id != control)
+
+c_count = o_count %>%
+  filter(query_id == control)
+
+clean_normal = position_normal
+
+if (length(q_count[[1]]) > 0) clean_normal = filter(clean_normal,
+                                                    !query_id == q_count$query_id |
+                                                    !strain_id == q_count$strain_id)
+
+if (length(c_count[[1]]) > 0) clean_normal = filter(clean_normal,
+                                                    strain_id != c_count$strain_id)
+
+#write_csv(clean_for_t, "data/clean-normalized.csv")
+```
+
+#### 6. Make comparisons
+
+```{r}
+#clean_normal = read_csv("data/normalized.csv")
+
+controls <- filter(clean_normal, query_id == control_query_id)
+queries  <- filter(clean_normal, query_id %in% c("g1","g6"))
+compared_to_controls <-
+  inner_join(
+    queries %>%
+      select(
+        date,temperature,strain_collection_id, strain_name, strain_id, plate, row, column,colony_row,colony_col,
+        query_id, query_name,size_pos_norm
+      ),
+    controls %>% 
+      select(
+        date,temperature,strain_collection_id, strain_name, strain_id, plate, row, column,colony_row,colony_col,
+        size_pos_norm
+      ),
+    by = c("date",
+      "temperature","strain_collection_id", "strain_name", "strain_id", "plate", "row", "column","colony_row","colony_col"
+    )
+  ) %>%
+  mutate(
+    growth_dif = size_pos_norm.x - size_pos_norm.y,
+    growth_ratio = (size_pos_norm.x + dead_strain_buffer)/(size_pos_norm.y + dead_strain_buffer),
+    lgr = log2(growth_ratio)
+  )
+
+```
+
+
+### 7. Use 'compared_to_controls' to calculate statistics of each repeat separately by adding "date" to group_by.
+
+```{r}
+t_stat <- compared_to_controls %>%
+  group_by(date, temperature, strain_name, strain_id, plate, row, column, query_id) %>%
+  summarise(
+    t        = t.test(size_pos_norm.x,size_pos_norm.y)$statistic,
+    p        = t.test(size_pos_norm.x,size_pos_norm.y)$p.value,
+    mean_dif = mean(growth_dif,na.rm=T),
+    sd_dif   = sd(growth_dif,na.rm=T),
+    mean_lgr = mean(lgr,na.rm=T),
+    sd_lgr   = sd(lgr,na.rm=T)
+  ) %>%
+  filter(!strain_name %in% c("blank","his3"))
+```
+
+
+### 8. Make a data frame containing mean_dif values for the two trials
+
+```{r}
+mean_dif_data <- t_stat %>%
+  group_by(strain_name, strain_id, plate, row, column, query_id) %>%
+  summarize(mean_dif_Trial1 = mean(mean_dif[date == "2021-10-11"]),
+            mean_dif_Trial2 = mean(mean_dif[date == "2021-11-08"]))
+
+#write_csv(mean_dif_data, "data/mean_dif_by_trial.csv")
+```
+
+
+### 9. Plot mean_dif values for the two trials. 2021-10-11 is on the x axis and 2021-11-08 is on the y axis. g1 and g6 are plotted separately.
+
+```{r}
+ggplot(mean_dif_data, aes(x = mean_dif_Trial1, y = mean_dif_Trial2, color=query_id)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  labs(x = "Growth Difference R1", y = "Growth Difference R2", title = "Growth Difference Correlation Analysis") +
+  theme_minimal() +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_wrap(~query_id) +
+  xlim(c(-1.5,1.5)) +
+  theme(panel.border = element_rect(color = "gray", fill = NA, size = 1), 
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        strip.text = element_text(size = 10))
+```
+
+### 10. Same plot, but with a best fit line using geom_smooth. Slopes and R-squared are noted at the bottom of this chunk.
+```{r}
+ggplot(mean_dif_data, aes(x = mean_dif_Trial1, y = mean_dif_Trial2, color=query_id)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "black", aes(group = query_id)) +
+  labs(x = "Growth Difference R1", y = "Growth Difference R2", title = "Growth Difference Correlation Analysis") +
+  theme_minimal() +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_wrap(~query_id) +
+  xlim(c(-1.5,1.5)) +
+  theme(panel.border = element_rect(color = "gray", fill = NA, size = 1), 
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        strip.text = element_text(size = 10))
+
+lapply(split(mean_dif_data, mean_dif_data$query_id), function(df) 
+  {coef(summary(lm(mean_dif_Trial2 ~ mean_dif_Trial1, df)))
+  })
+
+lapply(split(mean_dif_data, mean_dif_data$query_id), function(df) {
+  model <- lm(mean_dif_Trial2 ~ mean_dif_Trial1, df)
+  summary(model)$r.squared
+})
+
+
+#g1:Slope = 0.162 and R-squared = 0.032
+#g6:Slope = 0.235 and R-squared = 0.060
+```
+
+
+
+
+
+### The same correlation analysis can be done for mean log ratio
+### Make a data frame containing mean_lgr values for the two trials
+
+```{r}
+mean_lgr_data <- t_stat %>%
+  group_by(strain_name, strain_id, plate, row, column, query_id) %>%
+  summarize(mean_lgr_Trial1 = mean(mean_lgr[date == "2021-10-11"]),
+            mean_lgr_Trial2 = mean(mean_lgr[date == "2021-11-08"]))
+```
+
+### Plot mean_lgr values for the two trials. 2021-10-11 is on the x axis and 2021-11-08 is on the y axis. g1 and g6 are plotted separately.
+
+```{r}
+ggplot(mean_lgr_data, aes(x = mean_lgr_Trial1, y = mean_lgr_Trial2, color=query_id)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  labs(x = "Log Growth Ratio R1", y = "Log Growth Ratio R2", title = "Log Growth Ratio Correlation Analysis") +
+  theme_minimal() +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_wrap(~query_id) +
+  xlim(c(-7,7)) +
+  theme(panel.border = element_rect(color = "gray", fill = NA, size = 1), 
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        strip.text = element_text(size = 10)) 
+```
+
+
+### Same plot, but with a best fit line using geom_smooth. Slopes and R-squared are noted at the bottom of this chunk.
+```{r}
+ggplot(mean_lgr_data, aes(x = mean_lgr_Trial1, y = mean_lgr_Trial2, color=query_id)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "black", aes(group = query_id)) +
+  labs(x = "Log Growth Ratio R1", y = "Log Growth Ratio R2", title = "Log Growth Ratio Correlation Analysis") +
+  theme_minimal() +
+  scale_color_viridis_d(begin=0.2,end = 0.9,option = "turbo") +
+  facet_wrap(~query_id) +
+  xlim(c(-7,7)) +
+  theme(panel.border = element_rect(color = "gray", fill = NA, size = 1), 
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        strip.text = element_text(size = 10))
+
+lapply(split(mean_lgr_data, mean_lgr_data$query_id), function(df) 
+  {coef(summary(lm(mean_lgr_Trial2 ~ mean_lgr_Trial1, df)))
+  })
+
+lapply(split(mean_lgr_data, mean_lgr_data$query_id), function(df) {
+  model <- lm(mean_lgr_Trial2 ~ mean_lgr_Trial1, df)
+  summary(model)$r.squared
+})
+
+
+#g1:Slope = 0.143 and R-squared = 0.033
+#g6:Slope = 0.289 and R-squared = 0.108
+```
+
+##Matching color to volcano plots
+
+```{r}
+ggplot(mean_dif_data, aes(x = mean_dif_Trial1, y = mean_dif_Trial2)) +
+  geom_point(aes(color = query_id)) +
+  scale_color_manual(values = c("red", "blue")) +
+  geom_abline(intercept = 0, slope = 1, color = "black") +
+  labs(x = "Growth Difference R1", y = "Growth Difference R2", title = "Growth Difference Correlation Analysis") +
+  theme_bw() +
+  facet_wrap(~query_id) +
+  xlim(c(-1.5,1.5)) +
+  theme(panel.border = element_rect(color = "gray", fill = NA, size = 1), 
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        strip.text = element_text(size = 10))
+```
+
+

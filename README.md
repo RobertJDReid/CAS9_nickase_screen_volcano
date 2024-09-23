@@ -25,7 +25,14 @@ in a “volcano” plot which is normalized growth difference by *p*-value
 shown below. Note that *screenmill* currently requires an R version less
 than 4.2.
 
-<img src="figures/dif_scr.png" width="50%" style="display: block; margin: auto;" />
+<img src="figures/dif_scr.png" width="60%" style="display: block; margin: auto;" />
+
+Growth scores from the independent screen replicates were plotted
+normalized differential growth from each screen on the *x* and *y* axes.
+The overlaid line indicates a slope = 1 showing that affected mutations
+result in similar growth effects in the two runs of the screen.
+
+<img src="figures/corr.png" width="60%" style="display: block; margin: auto;" />
 
 ## References
 
