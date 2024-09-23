@@ -17,7 +17,7 @@ knitr::opts_chunk$set(echo = TRUE)
 This R project file contains code and data used to produce figures 5A and S5C
 in the manuscript _Leading and lagging strand fork collapses differ in structure
 and requirements for repair_ by Michael T Kimble, Aakanksha Sane,
-Robert JD Reid, Meret Arter, Matthew J Johnson, Rodney Rothstein, Scott Keeney
+Robert JD Reid, Matthew J Johnson, Rodney Rothstein
 and Lorraine S Symington. In revision for _Molecular Cell_.
 
 A mutant version of _CAS9_ , CAS9-D10A, was used to make single strand breaks in genomic DNA
