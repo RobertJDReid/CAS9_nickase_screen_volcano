@@ -3,9 +3,8 @@
 This R project file contains code and data used to produce figures 5A
 and S5C in the manuscript *Leading and lagging strand fork collapses
 differ in structure and requirements for repair* by Michael T Kimble,
-Aakanksha Sane, Robert JD Reid, Meret Arter, Matthew J Johnson, Rodney
-Rothstein, Scott Keeney and Lorraine S Symington. In revision for
-*Molecular Cell*.
+Aakanksha Sane, Robert JD Reid, Matthew J Johnson, Rodney Rothstein and
+Lorraine S Symington. In revision for *Molecular Cell*.
 
 A mutant version of *CAS9* , CAS9-D10A, was used to make single strand
 breaks in genomic DNA in combination with RNA guides targeting sites on
